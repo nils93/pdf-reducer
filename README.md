@@ -32,3 +32,11 @@ Originaldateien bleiben unverändert; die App verarbeitet alles lokal. Sie biete
 ## Verifikation
 
 `python3 -m unittest discover -s tests -v` prüft mit erzeugten Foto-PDFs die tatsächliche Größenreduktion, maximale Bildgröße, Seitengrößen, Ablehnung größerer Ergebnisse, Abbruch, verständliche Fehlermeldungen und ZIP-Dateinamen. Es werden keine persönlichen PDFs für die Tests verwendet.
+
+## Lizenz
+
+Der eigene Quellcode dieses Repositorys wird unter der **GNU Affero General Public License v3.0 oder später (AGPL-3.0-or-later)** veröffentlicht. Vollständiger Lizenztext: [LICENSE](LICENSE).
+
+Nutzung, Änderung und Weitergabe einschließlich kommerzieller Nutzung sind unter den Lizenzbedingungen erlaubt. Bei Weitergabe gelten insbesondere Pflichten zur Bereitstellung des zugehörigen Quellcodes und zum Erhalt der Lizenzhinweise. Für veränderte, über ein Netzwerk zugängliche Versionen gilt zusätzlich das Quellcodeangebot nach Abschnitt 13 der AGPL. Die Software wird ohne Gewährleistung bereitgestellt, soweit rechtlich zulässig.
+
+Ghostscript, MuPDF und Python werden separat installiert und behalten ihre eigenen Lizenzen; siehe [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
