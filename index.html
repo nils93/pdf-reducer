@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Reducer</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.45 system-ui, sans-serif; color: #202733; background: #f3f5f8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    main { width: min(760px, 100%); background: white; border: 1px solid #dce1e8; border-radius: 16px; padding: 28px; box-shadow: 0 12px 36px #26354a16; }
+    h1 { margin: 0 0 6px; font-size: 1.5rem; }
+    .intro, .hint { color: #5c6675; }
+    .mode { display: grid; gap: 6px; margin-top: 18px; }
+    select { width: 100%; padding: 9px; border: 1px solid #c7d0dc; border-radius: 8px; font: inherit; background: white; color: #202733; }
+    .drop { margin: 22px 0 16px; min-height: 145px; border: 2px dashed #9aa8ba; border-radius: 12px; display: grid; place-items: center; text-align: center; padding: 20px; background: #fafbfd; transition: .15s; }
+    .drop.over { border-color: #2764c5; background: #edf4ff; }
+    .drop p { margin: 0 0 12px; }
+    button, .pick { border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 650; cursor: pointer; }
+    .pick, #compress { background: #245db5; color: white; }
+    #download-zip { background: #16804a; color: white; }
+    #cancel { background: #a63d40; color: white; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    input[type=file] { display: none; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+    #files { list-style: none; margin: 0; padding: 0; }
+    #files li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px; border-bottom: 1px solid #edf0f3; }
+    .file-info { min-width: 0; }
+    .file-name { overflow-wrap: anywhere; }
+    .file-meta { display: block; color: #687385; font-size: .9rem; }
+    .remove-one { background: transparent; color: #788394; border: 1px solid #d7dde5; padding: 2px 9px 4px; font-size: 1.2rem; line-height: 1; flex: 0 0 auto; }
+    #progress { width: 100%; height: 14px; margin-top: 15px; accent-color: #245db5; }
+    #progress-label { min-height: 1.4em; color: #5c6675; font-size: .9rem; }
+    #status { min-height: 1.5em; margin-top: 12px; color: #344154; }
+    .hint { font-size: .88rem; margin: 14px 0 0; }
+    @media (max-width: 520px) { main { padding: 20px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>PDF Reducer</h1>
+  <div class="intro">iPhone-Fotos und Scans als PDF für den E-Mail-Versand verkleinern.</div>
+  <label class="mode" for="mode">Verarbeitung
+    <select id="mode">
+      <option value="photo">Fotos / Scans – gut lesbar (empfohlen)</option>
+      <option value="photo-small">Fotos / Scans – stärker verkleinern</option>
+      <option value="document">Dokumente – Text und Vektoren erhalten</option>
+    </select>
+  </label>
+  <section id="drop" class="drop" aria-label="PDF-Dateien ablegen">
+    <div>
+      <p>PDFs hier ablegen</p>
+      <label class="pick" for="picker">Dateien auswählen</label>
+      <input id="picker" type="file" accept="application/pdf,.pdf" multiple>
+    </div>
+  </section>
+  <ul id="files" aria-live="polite"></ul>
+  <div class="actions">
+    <button id="compress" disabled>PDFs komprimieren</button>
+    <button id="download-zip" disabled>Alle PDFs als ZIP herunterladen</button>
+    <button id="cancel" hidden>Abbrechen</button>
+  </div>
+  <progress id="progress" max="100" value="0" aria-label="Verarbeitungsfortschritt" hidden></progress>
+  <div id="progress-label" aria-live="polite"></div>
+  <div id="status" role="status"></div>
+  <p class="hint">Foto-Modi erstellen Bild-PDFs mit begrenzter Bildgröße. Suchtext, Links und Formularfunktionen gehen dabei verloren; prüfe die Lesbarkeit der Ausgabe. Die Verarbeitung läuft lokal, die Originale bleiben erhalten. Dateinamen im ZIP bleiben gleich. Version 3.</p>
+</main>
+<script>
+  const picker = document.querySelector('#picker');
+  const drop = document.querySelector('#drop');
+  const list = document.querySelector('#files');
+  const compressButton = document.querySelector('#compress');
+  const zipButton = document.querySelector('#download-zip');
+  const cancelButton = document.querySelector('#cancel');
+  const modeSelect = document.querySelector('#mode');
+  const progress = document.querySelector('#progress');
+  const progressLabel = document.querySelector('#progress-label');
+  const status = document.querySelector('#status');
+  let items = [];
+  let busy = false;
+  let cancelRequested = false;
+  let currentJobId = null;
+  let currentController = null;
+
+  const formatSize = bytes => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  function render() {
+    list.replaceChildren();
+    for (const item of items) {
+      const row = document.createElement('li');
+      const info = document.createElement('div');
+      info.className = 'file-info';
+      const name = document.createElement('span');
+      name.className = 'file-name';
+      name.textContent = item.file.name;
+      info.append(name);
+      const meta = document.createElement('span');
+      meta.className = 'file-meta';
+      const reduction = item.result ? 1 - item.result.size / item.file.size : 0;
+      const reductionText = reduction > 0
+        ? `${reduction < 0.001 ? '<0,1' : (reduction * 100).toFixed(1).replace('.', ',')}% kleiner`
+        : '';
+      meta.textContent = item.result
+        ? `${formatSize(item.file.size)} → ${formatSize(item.result.size)} · ${reductionText}${item.profile ? ` · ${item.profile}` : ''}`
+        : item.error || formatSize(item.file.size);
+      info.append(meta);
+      row.append(info);
+      const remove = document.createElement('button');
+      remove.className = 'remove-one';
+      remove.textContent = '×';
+      remove.title = `${item.file.name} entfernen`;
+      remove.setAttribute('aria-label', `${item.file.name} entfernen`);
+      remove.disabled = busy;
+      remove.addEventListener('click', () => {
+        items = items.filter(candidate => candidate !== item);
+        render();
+        status.textContent = 'PDF aus der Liste entfernt.';
+      });
+      row.append(remove);
+      list.append(row);
+    }
+    compressButton.disabled = busy || items.length === 0 || items.every(item => item.result);
+    zipButton.disabled = busy || items.length === 0 || items.some(item => !item.result);
+    zipButton.textContent = items.length === 1 ? 'Speichern unter' : 'Alle PDFs als ZIP herunterladen';
+    cancelButton.hidden = !busy;
+    cancelButton.disabled = cancelRequested;
+    picker.disabled = busy;
+    modeSelect.disabled = busy;
+  }
+
+  modeSelect.addEventListener('change', () => {
+    for (const item of items) { item.result = null; item.profile = ''; item.error = ''; }
+    status.textContent = 'Neue Stufe gewählt. Die PDFs können erneut komprimiert werden.';
+    render();
+  });
+
+  async function responseError(response) {
+    if ((response.headers.get('Content-Type') || '').includes('application/json')) {
+      const body = await response.json();
+      return body.error || `Fehler ${response.status}`;
+    }
+    const document = new DOMParser().parseFromString(await response.text(), 'text/html');
+    document.querySelectorAll('style, script').forEach(node => node.remove());
+    return document.body.textContent.replace(/\s+/g, ' ').trim() || `Fehler ${response.status}`;
+  }
+
+  function addFiles(fileList) {
+    if (busy) return;
+    const incoming = [...fileList].filter(file => file.name.toLowerCase().endsWith('.pdf'));
+    for (const file of incoming) items.push({ file, result: null, error: '' });
+    if (incoming.length !== fileList.length) status.textContent = 'Es wurden nur Dateien mit der Endung .pdf hinzugefügt.';
+    else status.textContent = '';
+    render();
+  }
+
+  picker.addEventListener('change', () => { addFiles(picker.files); picker.value = ''; });
+  for (const eventName of ['dragenter', 'dragover']) {
+    drop.addEventListener(eventName, event => { event.preventDefault(); drop.classList.add('over'); });
+  }
+  for (const eventName of ['dragleave', 'drop']) {
+    drop.addEventListener(eventName, event => { event.preventDefault(); drop.classList.remove('over'); });
+  }
+  drop.addEventListener('drop', event => { if (!busy) addFiles(event.dataTransfer.files); });
+
+  async function compressOne(item, index, count) {
+    item.error = 'wird komprimiert …';
+    render();
+    currentJobId = crypto.randomUUID();
+    currentController = new AbortController();
+    const jobId = currentJobId;
+    let pollRunning = false;
+    const poll = setInterval(async () => {
+      if (pollRunning || currentJobId !== jobId || cancelRequested) return;
+      pollRunning = true;
+      try {
+        const response = await fetch(`/progress?job=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const report = await response.json();
+        if (currentJobId !== jobId || cancelRequested) return;
+        progress.value = 100 * (index + report.completed / Math.max(1, report.total)) / count;
+        progressLabel.textContent = `PDF ${index + 1} von ${count}: ${report.stage}`;
+      } catch (_) {
+        // The compression request reports connection errors.
+      } finally {
+        pollRunning = false;
+      }
+    }, 500);
+    try {
+      const response = await fetch(`/compress?job=${encodeURIComponent(currentJobId)}&mode=${encodeURIComponent(modeSelect.value)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/pdf' },
+        body: item.file,
+        signal: currentController.signal
+      });
+      if (response.headers.get('X-PDF-Reducer-Version') !== '3') {
+        throw new Error('Der laufende Server muss für den neuen Foto-Modus neu gestartet werden.');
+      }
+      if (!response.ok) throw new Error(await responseError(response));
+      const result = await response.blob();
+      if (result.size >= item.file.size) {
+        throw new Error('Ausgabe wäre nicht kleiner als das Original und wurde verworfen.');
+      }
+      item.result = result;
+      item.profile = response.headers.get('X-Compression-Profile') || '';
+      item.error = '';
+    } catch (error) {
+      item.error = cancelRequested ? 'abgebrochen' : `Fehler: ${error.message}`;
+    } finally {
+      clearInterval(poll);
+      currentJobId = null;
+      currentController = null;
+    }
+    render();
+  }
+
+  compressButton.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    cancelRequested = false;
+    const pending = items.filter(item => !item.result);
+    progress.hidden = false;
+    progress.value = 0;
+    render();
+    for (let index = 0; index < pending.length; index++) {
+      if (cancelRequested) break;
+      const item = pending[index];
+      progress.value = Math.round((index / pending.length) * 100);
+      progressLabel.textContent = `PDF ${index + 1} von ${pending.length}: ${item.file.name}`;
+      await compressOne(item, index, pending.length);
+      if (!cancelRequested) progress.value = Math.round(((index + 1) / pending.length) * 100);
+    }
+    const wasCancelled = cancelRequested;
+    cancelRequested = false;
+    busy = false;
+    render();
+    const failed = items.filter(item => !item.result).length;
+    progressLabel.textContent = wasCancelled ? 'Komprimierung abgebrochen.' : failed ? `Fertig, ${failed} PDF(s) konnten nicht verkleinert werden.` : `${items.length} PDF(s) komprimiert.`;
+    status.textContent = wasCancelled
+      ? 'Bereits fertig komprimierte PDFs bleiben verfügbar. Nicht bearbeitete oder fehlgeschlagene Einträge kannst du mit × entfernen.'
+      : failed ? 'Dateien ohne kleinere Variante kannst du mit × entfernen; danach lässt sich der Rest herunterladen.'
+      : items.length === 1 ? 'Die PDF ist bereit. Über „Speichern unter“ herunterladen.' : 'Alle PDFs sind bereit. Lade sie zusammen als ZIP herunter.';
+  });
+
+  cancelButton.addEventListener('click', () => {
+    if (!busy || cancelRequested) return;
+    cancelRequested = true;
+    progressLabel.textContent = 'Abbruch wird ausgeführt …';
+    cancelButton.disabled = true;
+    if (currentJobId) {
+      fetch(`/cancel?job=${encodeURIComponent(currentJobId)}`, { method: 'POST' }).catch(() => {});
+    }
+    if (currentController) currentController.abort();
+  });
+
+  zipButton.addEventListener('click', async () => {
+    if (busy || items.length === 0 || items.some(item => !item.result)) return;
+    if (items.length === 1) {
+      const item = items[0];
+      const url = URL.createObjectURL(item.result);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = item.file.name;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      status.textContent = 'PDF-Download gestartet. Firefox verwendet deine Download-Einstellungen für den Speicherort.';
+      return;
+    }
+    const names = items.map(item => item.file.name);
+    if (new Set(names).size !== names.length) {
+      status.textContent = 'Mindestens zwei PDFs haben denselben Dateinamen. Entferne eines davon, damit die Einträge im ZIP eindeutig bleiben.';
+      return;
+    }
+    busy = true;
+    cancelRequested = false;
+    currentController = new AbortController();
+    progress.hidden = false;
+    progress.removeAttribute('value');
+    progressLabel.textContent = 'ZIP-Datei wird erstellt …';
+    render();
+    try {
+      const form = new FormData();
+      for (const item of items) form.append('files', item.result, item.file.name);
+      const response = await fetch('/zip', { method: 'POST', body: form, signal: currentController.signal });
+      if (!response.ok) throw new Error(await responseError(response));
+      const archive = await response.blob();
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'komprimierte-pdfs.zip';
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      progress.value = 100;
+      progressLabel.textContent = 'ZIP erstellt und Download gestartet.';
+      status.textContent = `${items.length} PDF(s) im ZIP. Firefox speichert die ZIP-Datei nach deinen Download-Einstellungen.`;
+    } catch (error) {
+      status.textContent = cancelRequested ? 'ZIP-Download abgebrochen.' : `ZIP konnte nicht erstellt werden: ${error.message}`;
+    } finally {
+      currentController = null;
+      cancelRequested = false;
+      busy = false;
+      render();
+    }
+  });
+</script>
+</body>
+</html>
